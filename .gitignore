@@ -1,23 +1,38 @@
-# Dependencies
+# ── Dependencies ──────────────────────────────────────────────────────────────
 node_modules/
 target/
+.npm/
+.yarn/
+yarn.lock
+pnpm-lock.yaml
+
+# ── Build artifacts ────────────────────────────────────────────────────────────
 dist/
+build/
 .angular/
 .nest/
+*.js.map
+*.d.ts.map
 
-# Environment
+# Rust/Soroban compiled output
+*.wasm
+Cargo.lock
+
+# ── Environment & secrets ──────────────────────────────────────────────────────
 .env
 .env.*
 !.env.example
 frontend/src/environments/environment.ts
 frontend/src/environments/environment.prod.ts
 
-# OS
+# ── OS files ───────────────────────────────────────────────────────────────────
 .DS_Store
-Thumbs.db
 *.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
 
-# IDE
+# ── IDE / editor files ─────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
@@ -26,17 +41,21 @@ Thumbs.db
 *.ntvs*
 *.njsproj
 *.sln
+*.code-workspace
+.history/
+*.sublime-project
+*.sublime-workspace
 
-# Soroban
-.soroban/
-contract-ids.testnet.json
-
-# Temporary
-tmp/
+# ── Logs ──────────────────────────────────────────────────────────────────────
 logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Test artifacts
+# ── Test artifacts ─────────────────────────────────────────────────────────────
 coverage/
 __snapshots__/
 *.snap
@@ -45,24 +64,39 @@ test-results/
 .nyc_output/
 lcov.info
 *.lcov
+e2e-results/
+playwright-report/
+test-report/
+
 # Soroban test snapshots (auto-generated, not source)
 test_snapshots/
 
-# Build artifacts
-*.js.map
-*.d.ts.map
-build/
-# Rust/Soroban compiled output
-*.wasm
-Cargo.lock
+# ── Soroban / Stellar ──────────────────────────────────────────────────────────
+.soroban/
+contract-ids.testnet.json
+scripts/contract-ids.testnet.json
 
-# Package manager
-.npm/
-.yarn/
-yarn.lock
-pnpm-lock.yaml
+# ── Temporary files ────────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
 
-# Debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# ── Package manager caches ────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+.tsbuildinfo
+*.tsbuildinfo
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+.dockerignore.local
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.pid
+*.seed
+*.pid.lock
+.grunt
+.lock-wscript
