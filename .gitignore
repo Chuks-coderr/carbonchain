@@ -1,38 +1,80 @@
-# ── Dependencies ──────────────────────────────────────────────────────────────
+# ── Node / JavaScript ─────────────────────────────────────────────────────────
 node_modules/
-target/
+dist/
+build/
+.angular/
+.nest/
 .npm/
 .yarn/
 yarn.lock
 pnpm-lock.yaml
 
-# ── Build artifacts ────────────────────────────────────────────────────────────
-dist/
+# Packed npm tarballs
+*.tgz
+*.tar.gz
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# ── Rust / Soroban ────────────────────────────────────────────────────────────
+target/
+# Cargo.lock is excluded for general packages…
+Cargo.lock
+# …but committed for the contracts workspace so CI builds don't re-resolve
+# to incompatible versions of soroban-sdk 26 stack dependencies.
+!contracts/Cargo.lock
+
+# Compiled WASM artifacts
+*.wasm
+
+# ── Test Artifacts ────────────────────────────────────────────────────────────
+# Coverage reports
+coverage/
+.nyc_output/
+lcov.info
+*.lcov
+coverage-final.json
+jest-coverage/
+
+# Snapshot files (Jest, Vitest, Jasmine, Soroban SDK)
+__snapshots__/
+**/__snapshots__/
+*.snap
+*.test-snapshot
+test_snapshots/
+**/test_snapshots/
+
+# Test result / reporter output
+junit.xml
+test-results/
+karma-test-results.xml
+browser_test_results/
+jasmine-results/
+playwright-report/
+cypress/screenshots/
+cypress/videos/
+cypress/downloads/
+
+# Cache directories used by test runners
+.vitest-cache/
+.jest-cache/
+.jest_cache/
+.karma/
+
+# ── Build Artifacts ───────────────────────────────────────────────────────────
 build/
-.angular/
-.nest/
 *.js.map
 *.d.ts.map
+*.tsbuildinfo
 
-# Rust/Soroban compiled output
-*.wasm
-Cargo.lock
+# shared/ package compiled output (source is index.ts)
+shared/index.js
+shared/index.d.ts
 
-# ── Environment & secrets ──────────────────────────────────────────────────────
-.env
-.env.*
-!.env.example
-frontend/src/environments/environment.ts
-frontend/src/environments/environment.prod.ts
-
-# ── OS files ───────────────────────────────────────────────────────────────────
-.DS_Store
-*.DS_Store
-Thumbs.db
-desktop.ini
-ehthumbs.db
-
-# ── IDE / editor files ─────────────────────────────────────────────────────────
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
@@ -41,62 +83,56 @@ ehthumbs.db
 *.ntvs*
 *.njsproj
 *.sln
-*.code-workspace
-.history/
-*.sublime-project
-*.sublime-workspace
-
-# ── Logs ──────────────────────────────────────────────────────────────────────
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# ── Test artifacts ─────────────────────────────────────────────────────────────
-coverage/
-__snapshots__/
-*.snap
-junit.xml
-test-results/
-.nyc_output/
-lcov.info
-*.lcov
-e2e-results/
-playwright-report/
-test-report/
-
-# Soroban test snapshots (auto-generated, not source)
-test_snapshots/
-
-# ── Soroban / Stellar ──────────────────────────────────────────────────────────
-.soroban/
-contract-ids.testnet.json
-scripts/contract-ids.testnet.json
-
-# ── Temporary files ────────────────────────────────────────────────────────────
-tmp/
-temp/
-*.tmp
 *.bak
 *.orig
+*.rej
+*~
+*.code-workspace
+.history/
 
-# ── Package manager caches ────────────────────────────────────────────────────
-.cache/
-.parcel-cache/
-.eslintcache
-.stylelintcache
-.tsbuildinfo
-*.tsbuildinfo
+# ── Soroban CLI / Deployment ──────────────────────────────────────────────────
+.soroban/
+.stellar/
+contract-ids.testnet.json
+scripts/contract-ids.testnet.json
+contract-ids.*.json
 
-# ── Docker ────────────────────────────────────────────────────────────────────
-.dockerignore.local
-
-# ── Misc ──────────────────────────────────────────────────────────────────────
+# ── Docker / Runtime ──────────────────────────────────────────────────────────
+docker-compose.override.yml
+pids/
 *.pid
 *.seed
 *.pid.lock
-.grunt
-.lock-wscript
+
+# Production Redis ACL files with real passwords (local dev placeholder is committed).
+# In production, inject config/redis/users.acl from a secrets manager.
+config/redis/*.prod.acl
+
+# ── Profiling ─────────────────────────────────────────────────────────────────
+*.heapsnapshot
+*.cpuprofile
+
+# ── OS artefacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ── AI / Codespace tooling ────────────────────────────────────────────────────
+# Kiro AI artifacts (session state, agent configs)
+.kiro/
+# Devcontainer
+.devcontainer/
+
+# ── Local override files — not for source control ─────────────────────────────
+*.local
+*.local.*
+
+# ── PDF / generated certificate artifacts ─────────────────────────────────────
+# Retirement certificate PDFs are ephemeral; never commit generated PDFs.
+*.pdf
+
+# ── Misc generated files ──────────────────────────────────────────────────────
+# Lighthouse CI reports
+.lighthouseci/
+lhci_reports/

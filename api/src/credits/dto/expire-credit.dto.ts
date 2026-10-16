@@ -1,20 +1,18 @@
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsString, IsNotEmpty } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
 
+/**
+ * DTO for POST /api/v1/credits/:id/expire
+ *
+ * Issue #485: Expire a credit that is past its vintage grace period.
+ * Only callable by the admin.
+ */
 export class ExpireCreditDto {
   @ApiProperty({
-    example: 'admin-reason-expired-vintage',
-    description: 'Reason for expiring the credit (e.g. vintage year passed)',
+    example: 'GABC...XYZ',
+    description: 'Stellar public key of the admin authorising the expiry',
   })
   @IsString()
   @IsNotEmpty()
-  reason: string;
-
-  @ApiPropertyOptional({
-    example: 'GABC...XYZ',
-    description: 'Stellar public key of the admin performing the expiry',
-  })
-  @IsOptional()
-  @IsString()
-  adminPublicKey?: string;
+  adminPublicKey: string;
 }

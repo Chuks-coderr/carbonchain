@@ -6,200 +6,71 @@ import {
   Body,
   Query,
   UseGuards,
+  UseInterceptors,
   DefaultValuePipe,
   ParseIntPipe,
   Request,
+  UsePipes,
+  ValidationPipe,
   HttpCode,
   HttpStatus,
+  forwardRef,
+  Inject,
 } from '@nestjs/common';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiResponse,
-  ApiParam,
-  ApiQuery,
-  ApiBearerAuth,
-  ApiBody,
-} from '@nestjs/swagger';
-import { CreditsService, IssueCreditDto } from './credits.service';
-import { CreditMetadata } from '../shared';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { PageResult } from './credit.repository';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
+import { CreditsService } from './credits.service';
+import { ETagCacheInterceptor } from './etag-cache.interceptor';
+import { IssueCreditDto } from './dto/issue-credit.dto';
+import { TransferCreditDto } from './dto/transfer-credit.dto';
+import { SplitCreditDto } from './dto/split-credit.dto';
 import { ExpireCreditDto } from './dto/expire-credit.dto';
 import { DisputeCreditDto } from './dto/dispute-credit.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
-import { BatchStatusTransitionDto } from './dto/batch-status-transition.dto';
+import { MergeCreditsDto } from './dto/merge-credits.dto';
+import { CreditMetadata, CreditStatus } from '../../../shared';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PageResult, CursorPageResult } from './credit.repository';
+import { BulkCreditsDto } from './dto/bulk-credits.dto';
+import { UseReplicaForRead } from '../common/use-replica-for-read.decorator';
+import { Idempotent } from '../common/idempotency.interceptor';
+import { RetirementService } from '../retirement/retirement.service';
+import { RetirementRequestDto } from '../retirement/dto/retire.dto';
 
 @ApiTags('credits')
 @Controller('credits')
 export class CreditsController {
-  constructor(private readonly creditsService: CreditsService) {}
+  constructor(
+    private readonly creditsService: CreditsService,
+    @Inject(forwardRef(() => RetirementService))
+    private readonly retirementService: RetirementService,
+  ) {}
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // POST /credits/issue
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'Issue a new carbon credit',
-    description:
-      'Submit a new carbon credit issuance request. The credit is persisted in the off-chain index with Pending status until a verifier approves it on-chain.',
-  })
-  @ApiBearerAuth()
-  @ApiBody({ type: IssueCreditDto })
-  @ApiResponse({
-    status: 201,
-    description: 'Credit issued successfully. Returns the new credit ID.',
-    schema: { example: { creditId: 'abc123def456...' } },
-  })
-  @ApiResponse({ status: 400, description: 'Invalid request body or validation error.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized — valid JWT required.' })
+  @ApiOperation({ summary: 'Issue a new carbon credit' })
+  @ApiResponse({ status: 201, description: 'Credit issued successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @UseGuards(JwtAuthGuard)
+  @Idempotent()
   @Post('issue')
-  issueCredit(@Body() dto: IssueCreditDto): Promise<{ creditId: string }> {
+  issueCredit(
+    @Body() dto: IssueCreditDto,
+  ): Promise<{ creditId: string; estimatedFeeStroops?: number }> {
     return this.creditsService.issueCredit(dto);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // POST /credits/bulk
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'Fetch multiple credits by ID in one request',
-    description:
-      'Returns metadata for up to 100 credits. Credits not found are silently skipped.',
-  })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        ids: {
-          type: 'array',
-          items: { type: 'string' },
-          example: ['abc123', 'def456'],
-          description: 'Array of credit IDs to fetch (max 100)',
-        },
-      },
-      required: ['ids'],
-    },
-  })
-  @ApiResponse({
-    status: 201,
-    description: 'Array of credit metadata objects for each found credit.',
-  })
-  @ApiResponse({ status: 400, description: 'Empty array or more than 100 IDs provided.' })
+  @ApiOperation({ summary: 'Bulk fetch credits by IDs' })
+  @ApiResponse({ status: 200, description: 'Returns credit metadata array' })
+  @UseReplicaForRead()
   @Post('bulk')
-  async getBulkCredits(
-    @Body() dto: { ids: string[] },
-  ): Promise<CreditMetadata[]> {
+  @UsePipes(
+    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }),
+  )
+  async getBulkCredits(@Body() dto: BulkCreditsDto): Promise<CreditMetadata[]> {
     return this.creditsService.getBulkCredits(dto.ids);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // POST /credits/batch-transition  (#1106)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'Batch expire or dispute multiple credits (admin only)',
-    description:
-      'Processes each credit sequentially. Returns separate succeeded and failed arrays (partial success mode). ' +
-      'Use action="expire" for vintage-year sweeps or action="dispute" with evidenceIpfsHash for bulk disputes.',
-  })
-  @ApiBearerAuth()
-  @ApiBody({ type: BatchStatusTransitionDto })
-  @ApiResponse({
-    status: 201,
-    description: 'Batch transition complete. Returns succeeded and failed arrays.',
-    schema: {
-      example: {
-        succeeded: ['credit-id-1', 'credit-id-2'],
-        failed: [{ creditId: 'credit-id-3', error: 'Credit credit-id-3 not found' }],
-      },
-    },
-  })
-  @ApiResponse({ status: 400, description: 'Invalid request body or missing evidenceIpfsHash for dispute action.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized — valid JWT required.' })
-  @UseGuards(JwtAuthGuard)
-  @Post('batch-transition')
-  async batchTransitionCredits(
-    @Body() dto: BatchStatusTransitionDto,
-    @Request() req: any,
-  ): Promise<{
-    succeeded: string[];
-    failed: Array<{ creditId: string; error: string }>;
-  }> {
-    return this.creditsService.batchTransitionCredits(dto, req.user.account);
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // GET /credits
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'List credits with optional filters and pagination',
-    description:
-      'Returns a paginated list of credits. Defaults to Active credits when no status filter is provided. ' +
-      'Supports filtering by methodology, geography, vintage year, status, and tonnes range.',
-  })
-  @ApiQuery({
-    name: 'methodology',
-    required: false,
-    description: 'Filter by methodology (e.g. VCS, REDD+, Gold Standard)',
-    example: 'VCS',
-  })
-  @ApiQuery({
-    name: 'geography',
-    required: false,
-    description: 'Filter by ISO 3166-1 alpha-2 country code',
-    example: 'NG',
-  })
-  @ApiQuery({
-    name: 'vintage_year',
-    required: false,
-    description: 'Filter by vintage year (e.g. 2024)',
-    example: '2024',
-  })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    description: 'Filter by credit status: Active, Pending, Retired, Flagged, Expired, Disputed',
-    example: 'Active',
-  })
-  @ApiQuery({
-    name: 'min_tonnes',
-    required: false,
-    description: 'Minimum tonnes value (inclusive), expressed in credit units (1 tonne = 1,000,000 units)',
-    example: '1000000',
-  })
-  @ApiQuery({
-    name: 'max_tonnes',
-    required: false,
-    description: 'Maximum tonnes value (inclusive), expressed in credit units',
-    example: '100000000',
-  })
-  @ApiQuery({
-    name: 'page',
-    required: false,
-    description: 'Page number (1-based)',
-    example: '1',
-  })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    description: 'Number of results per page (default 10)',
-    example: '10',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Paginated list of credits matching the filters.',
-    schema: {
-      example: {
-        data: [{ id: 'abc123', status: 'Active', tonnes: '1000000', methodology: 'VCS' }],
-        total: 42,
-        page: 1,
-        limit: 10,
-      },
-    },
-  })
+  @ApiOperation({ summary: 'List credits with optional filters' })
+  @ApiResponse({ status: 200, description: 'Paginated list of credits' })
+  @UseReplicaForRead()
   @Get()
   async listCredits(
     @Query('methodology') methodology?: string,
@@ -208,14 +79,43 @@ export class CreditsController {
     @Query('status') status?: string,
     @Query('min_tonnes') minTonnes?: string,
     @Query('max_tonnes') maxTonnes?: string,
+    @Query('cursor') cursor?: string,
     @Query('page') page: string = '1',
-    @Query('limit') limit: string = '10',
-  ): Promise<{
-    data: CreditMetadata[];
-    total: number;
-    page: number;
-    limit: number;
-  }> {
+    @Query('limit') limit: string = '20',
+  ): Promise<
+    | {
+        data: CreditMetadata[];
+        total: number;
+        page: number;
+        limit: number;
+      }
+    | {
+        data: CreditMetadata[];
+        next_cursor: string | null;
+        limit: number;
+        /** Signals to callers that offset pagination is deprecated. */
+        pagination_mode: 'cursor';
+      }
+  > {
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 1, 1), 100);
+
+    // Cursor-based path (preferred — O(1) at any depth)
+    if (cursor !== undefined) {
+      return this.creditsService.listCreditsCursor({
+        methodology,
+        geography,
+        vintageYear: vintageYear ? parseInt(vintageYear, 10) : undefined,
+        status,
+        minTonnes,
+        maxTonnes,
+        cursor,
+        limit: parsedLimit,
+      });
+    }
+
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+
+    // Offset-based path (deprecated — emits warning header via service layer)
     return this.creditsService.listCredits({
       methodology,
       geography,
@@ -223,53 +123,27 @@ export class CreditsController {
       status,
       minTonnes,
       maxTonnes,
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
+      page: parsedPage,
+      limit: parsedLimit,
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // GET /credits/verifier/:address/pending-count  (#1105)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'Get pending credit count for a verifier',
-    description:
-      'Returns the number of credits in Pending status awaiting verifier approval. ' +
-      'Cached with a 30-second TTL for live dashboard use.',
-  })
-  @ApiParam({
-    name: 'address',
-    description: 'Stellar public key of the verifier',
-    example: 'GABC...XYZ',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Pending credit count for the verifier.',
-    schema: {
-      example: { address: 'GABC...XYZ', pendingCount: 7 },
-    },
-  })
-  @ApiResponse({ status: 404, description: 'Verifier address not found.' })
-  @Get('verifier/:address/pending-count')
-  async getVerifierPendingCount(
-    @Param('address') address: string,
-  ): Promise<{ address: string; pendingCount: number }> {
-    return this.creditsService.getVerifierPendingCount(address);
+  // Issue #541: declared before `:id` so NestJS routes /credits/count here
+  // rather than treating "count" as a credit ID.
+  @ApiOperation({ summary: 'Get total number of credits ever issued' })
+  @ApiResponse({ status: 200, description: 'Total credit count' })
+  @Get('count')
+  async getCreditCount(): Promise<{ count: number }> {
+    const count = await this.creditsService.getCreditCount();
+    return { count };
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // GET /credits/:id
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'Get a single credit by ID',
-    description:
-      'Returns full credit metadata. Checks the Redis cache first, then the off-chain index, then falls back to on-chain contract read.',
-  })
-  @ApiParam({ name: 'id', description: 'Hex-encoded credit ID', example: 'abc123def456' })
-  @ApiResponse({ status: 200, description: 'Credit metadata.' })
-  @ApiResponse({ status: 404, description: 'Credit not found.' })
+  @ApiOperation({ summary: 'Get credit by ID' })
+  @ApiResponse({ status: 200, description: 'Credit metadata' })
+  @ApiResponse({ status: 304, description: 'Not Modified (ETag match)' })
+  @ApiResponse({ status: 404, description: 'Credit not found' })
+  @UseInterceptors(ETagCacheInterceptor)
+  @UseReplicaForRead()
   @Get(':id')
   async getCredit(@Param('id') id: string): Promise<CreditMetadata> {
     return this.creditsService.getCredit(id);
@@ -280,9 +154,9 @@ export class CreditsController {
   // ─────────────────────────────────────────────────────────────────────────────
 
   @ApiOperation({
-    summary: 'Get full lifecycle provenance of a credit',
+    summary: 'Get credit provenance',
     description:
-      'Returns all lifecycle events for a credit in chronological order: submitted → approved → transferred → retired/flagged.',
+      'Returns the full lifecycle of a credit including all events (submit, approval, transfers, retirement)',
   })
   @ApiBearerAuth()
   @ApiParam({ name: 'id', description: 'Hex-encoded credit ID', example: 'abc123def456' })
@@ -300,34 +174,19 @@ export class CreditsController {
   @ApiResponse({ status: 404, description: 'Credit not found or provenance unavailable.' })
   @UseGuards(JwtAuthGuard)
   @Get(':id/provenance')
-  async getCreditProvenance(
-    @Param('id') creditId: string,
-  ): Promise<Array<{
-    action: string;
-    actor: string;
-    timestamp: number;
-    txHash: string;
-  }>> {
+  async getCreditProvenance(@Param('id') creditId: string): Promise<
+    Array<{
+      action: string;
+      actor: string;
+      timestamp: number;
+      txHash: string;
+    }>
+  > {
     return this.creditsService.getCreditProvenance(creditId);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // GET /credits/project/:projectId
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'List credits by project ID',
-    description: 'Returns the IDs of all credits associated with the given project.',
-  })
-  @ApiParam({ name: 'projectId', description: 'Project identifier', example: 'PROJ-001' })
-  @ApiQuery({ name: 'page', required: false, description: 'Page number (1-based)', example: '1' })
-  @ApiQuery({ name: 'limit', required: false, description: 'Results per page', example: '20' })
-  @ApiResponse({
-    status: 200,
-    description: 'Array of credit IDs for the project.',
-    schema: { example: ['abc123', 'def456'] },
-  })
-  @ApiResponse({ status: 404, description: 'Project not found.' })
+  @ApiOperation({ summary: 'List credits by project' })
+  @UseReplicaForRead()
   @Get('project/:projectId')
   async listByProject(
     @Param('projectId') projectId: string,
@@ -337,79 +196,242 @@ export class CreditsController {
     return this.creditsService.listCreditsByProject(projectId);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // POST /credits/:id/transfer
-  // ─────────────────────────────────────────────────────────────────────────────
-
   @ApiOperation({
-    summary: 'Transfer a credit to another address',
+    summary: 'List credits by owner (paginated)',
     description:
-      'Transfers ownership of an Active credit to a new Stellar address. Caller must be the current owner.',
+      'Contract-side pagination via get_credits_by_owner_paginated — avoids fetching the full owner credit list to serve one page.',
   })
-  @ApiBearerAuth()
-  @ApiParam({ name: 'id', description: 'Hex-encoded credit ID', example: 'abc123def456' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: { to: { type: 'string', example: 'GDEST...XYZ', description: 'Recipient Stellar public key' } },
-      required: ['to'],
-    },
-  })
-  @ApiResponse({ status: 201, description: 'Credit transferred. Returns updated credit metadata.' })
-  @ApiResponse({ status: 400, description: 'Credit is not in Active status.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized — valid JWT required.' })
-  @ApiResponse({ status: 404, description: 'Credit not found.' })
+  @Get('owner/:owner')
+  async listByOwner(
+    @Param('owner') owner: string,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ): Promise<{ data: string[]; offset: number; limit: number }> {
+    return this.creditsService.listCreditsByOwner(owner, offset, limit);
+  }
+
+  @ApiOperation({ summary: 'Transfer a credit to another address' })
+  @ApiResponse({ status: 200, description: 'Credit transferred successfully' })
+  @ApiResponse({ status: 400, description: 'Caller does not own this credit' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @UseGuards(JwtAuthGuard)
+  @Idempotent()
   @Post(':id/transfer')
   async transferCredit(
     @Param('id') creditId: string,
-    @Body() dto: { to: string },
+    @Body() dto: TransferCreditDto,
     @Request() req: any,
   ): Promise<CreditMetadata> {
-    return this.creditsService.transferCredit(creditId, dto.to, req.user.account);
+    return this.creditsService.transferCredit(
+      creditId,
+      dto.to,
+      req.user.account,
+      dto.nonce,
+    );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // POST /credits/:id/split
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  @ApiOperation({
-    summary: 'Split a credit into two child credits',
-    description:
-      'Splits an Active credit into two child credits. The parent credit is retired. ' +
-      'splitTonnes must be a multiple of MIN_CREDIT_UNIT (100,000) and must be less than the credit\'s total tonnes.',
-  })
-  @ApiBearerAuth()
-  @ApiParam({ name: 'id', description: 'Hex-encoded credit ID to split', example: 'abc123def456' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        splitTonnes: {
-          type: 'number',
-          example: 500000,
-          description: 'Tonnes for the first child credit (must be multiple of 100,000 and < parent tonnes)',
-        },
-      },
-      required: ['splitTonnes'],
-    },
-  })
-  @ApiResponse({
-    status: 201,
-    description: 'Credit split successfully. Returns IDs of both child credits.',
-    schema: { example: { childCredit1: 'abc123-split-1', childCredit2: 'abc123-split-2' } },
-  })
-  @ApiResponse({ status: 400, description: 'splitTonnes is not a valid multiple or exceeds parent tonnes.' })
-  @ApiResponse({ status: 401, description: 'Unauthorized — valid JWT required.' })
-  @ApiResponse({ status: 404, description: 'Credit not found.' })
+  @ApiOperation({ summary: 'Split a credit into two child credits' })
+  @ApiResponse({ status: 201, description: 'Credit split successfully' })
+  @ApiResponse({ status: 400, description: 'Caller does not own this credit' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @UseGuards(JwtAuthGuard)
+  @Idempotent()
   @Post(':id/split')
   async splitCredit(
     @Param('id') creditId: string,
-    @Body() dto: { splitTonnes: number },
+    @Body() dto: SplitCreditDto,
     @Request() req: any,
   ): Promise<{ childCredit1: string; childCredit2: string }> {
-    return this.creditsService.splitCredit(creditId, dto.splitTonnes, req.user.account);
+    return this.creditsService.splitCredit(
+      creditId,
+      dto.splitTonnes,
+      req.user.account,
+      dto.nonce,
+    );
+  }
+
+  // ── Issue #485: Credit expiry ─────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/credits/:id/expire
+   *
+   * Transition an Active credit to Expired on-chain.
+   * Only callable by the admin (JWT required).
+   *
+   * The contract verifies the credit is Active (or Disputed) and that the
+   * caller is the registered admin.  Expired credits can no longer be traded
+   * or retired.
+   */
+  @ApiOperation({
+    summary: 'Expire a carbon credit',
+    description:
+      'Transitions an Active credit to Expired on-chain. Admin only.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Credit expired successfully',
+    schema: {
+      example: { creditId: 'a1b2c3...', status: 'Expired' },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Credit not found' })
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/expire')
+  async expireCredit(
+    @Param('id') creditId: string,
+    @Body() dto: ExpireCreditDto,
+  ): Promise<{ creditId: string; status: CreditStatus }> {
+    return this.creditsService.expireCredit(creditId, dto.adminPublicKey);
+  }
+
+  // ── Issue #486: Dispute lifecycle ─────────────────────────────────────────
+
+  /**
+   * POST /api/v1/credits/:id/dispute
+   *
+   * Raise a dispute against an Active credit.
+   * Any registered verifier or the credit owner may call this (JWT required).
+   *
+   * The credit transitions to Disputed, blocking trades on the marketplace.
+   * Evidence (IPFS hash) is stored on-chain in DataKey::Dispute(credit_id).
+   */
+  @ApiOperation({
+    summary: 'Raise a dispute against a credit',
+    description:
+      'Transitions an Active credit to Disputed and stores evidence on-chain.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Credit disputed successfully',
+    schema: {
+      example: { creditId: 'a1b2c3...', status: 'Disputed' },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Credit not found' })
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/dispute')
+  async disputeCredit(
+    @Param('id') creditId: string,
+    @Body() dto: DisputeCreditDto,
+  ): Promise<{ creditId: string; status: CreditStatus }> {
+    return this.creditsService.disputeCredit(
+      creditId,
+      dto.disputerPublicKey,
+      dto.evidenceIpfsHash,
+    );
+  }
+
+  /**
+   * POST /api/v1/credits/:id/resolve
+   *
+   * Resolve a disputed credit.  Admin only (JWT required).
+   *
+   * Outcome codes:
+   *   0 → Active   (dispute dismissed, credit reinstated)
+   *   1 → Flagged  (dispute escalated for further review)
+   *   2 → Retired  (credit revoked — treated as consumed)
+   */
+  @ApiOperation({
+    summary: 'Resolve a disputed credit',
+    description:
+      'Admin-only. Resolves a Disputed credit: 0=Active, 1=Flagged, 2=Retired.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Dispute resolved successfully',
+    schema: {
+      example: { creditId: 'a1b2c3...', status: 'Active', outcome: 0 },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Credit not found' })
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/resolve')
+  async resolveDispute(
+    @Param('id') creditId: string,
+    @Body() dto: ResolveDisputeDto,
+  ): Promise<{ creditId: string; status: CreditStatus; outcome: number }> {
+    return this.creditsService.resolveDispute(
+      creditId,
+      dto.adminPublicKey,
+      dto.outcome,
+    );
+  }
+
+  // ── Issue #487: Credit merging ────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/credits/merge
+   *
+   * Merge 2–20 Active credits owned by the same caller into a single new
+   * credit.  Input credits are consumed (Retired); the new credit is Active
+   * with tonnes = sum of inputs.
+   *
+   * All input credits must share the same project_id, vintage_year,
+   * methodology, and geography.  JWT required.
+   *
+   * Note: The route is declared BEFORE `:id` sub-routes so NestJS does not
+   * accidentally route /merge to a param handler.
+   */
+  @ApiOperation({
+    summary: 'Merge multiple credits into one',
+    description:
+      'Merges 2–20 Active credits owned by the caller. All inputs must share project/vintage/methodology/geography.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Credits merged successfully',
+    schema: {
+      example: { mergedCreditId: 'deadbeef...', sourceCount: 3 },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid merge request' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @UseGuards(JwtAuthGuard)
+  @Post('merge')
+  async mergeCredits(
+    @Body() dto: MergeCreditsDto,
+  ): Promise<{ mergedCreditId: string; sourceCount: number }> {
+    return this.creditsService.mergeCredits(
+      dto.callerPublicKey,
+      dto.creditIds,
+      dto.nonce,
+    );
+  }
+
+  /**
+   * ## Thin proxy — retire via credit ID route
+   *
+   * `POST /credits/:id/retire` is a convenience route that delegates directly
+   * to the **canonical** `POST /retirement` entrypoint via
+   * `RetirementService.retireCredit()`.  Both routes share the same DTO shape
+   * (`RetireDto`) and return an identical response:
+   * `{ retirementId: string; certificateIpfsHash: string }`.
+   *
+   * The buyer is bound to the authenticated principal, never taken from the body.
+   *
+   * Do NOT add independent logic here — all retire business logic lives in
+   * `RetirementService`.
+   */
+  @ApiOperation({
+    summary: '(Proxy) Retire a credit — delegates to POST /retirement',
+    description:
+      'Thin proxy for POST /retirement. Uses the same RetireDto and returns the same response shape. The credit ID from the URL is used as the creditId field.',
+  })
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/retire')
+  async retireCredit(
+    @Param('id') creditId: string,
+    @Body() body: RetirementRequestDto,
+    @Request() req: { user: { account: string } },
+  ): Promise<{ retirementId: string; certificateIpfsHash: string }> {
+    return this.retirementService.retireCredit(
+      creditId,
+      { reason: body.reason, nonce: body.nonce, tonnes: body.tonnes },
+      req.user.account,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
